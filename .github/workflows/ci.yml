@@ -1,0 +1,30 @@
+﻿name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        py: ["3.11"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.py }}
+      - name: Install Poetry
+        uses: abatilo/actions-poetry@v3
+        with:
+          poetry-version: "2.1.4"
+      - name: Configure Poetry to create in-project venv
+        run: poetry config virtualenvs.in-project true
+      - name: Install deps
+        run: poetry install --no-interaction
+      - name: Lint
+        run: poetry run ruff check .
+      - name: Format check
+        run: poetry run ruff format --check .
+      - name: Tests
+        run: poetry run pytest

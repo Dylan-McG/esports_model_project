@@ -1,0 +1,44 @@
+[tool.poetry]
+name = "esports-model-project"
+version = "0.1.0"
+description = "Portfolio-grade Dota 2 pricing baseline with clean engineering."
+authors = ["Dylan McGuinness"]
+readme = "README.md"
+packages = [{ include = "esports_quant", from = "src" }]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+pandas = "^2.2"
+numpy = "^1.26"
+scipy = "^1.12"
+scikit-learn = "^1.5"
+pyarrow = "^16.1"
+duckdb = "^1.0"
+matplotlib = "^3.9"
+typer = {version = "^0.12", extras = ["all"]}
+requests = "^2.32"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.2"
+coverage = "^7.6"
+ruff = "^0.5"
+mypy = "^1.10"
+pre-commit = "^3.7"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
