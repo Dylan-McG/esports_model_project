@@ -17,6 +17,7 @@ duckdb = "^1.0"
 matplotlib = "^3.9"
 typer = {version = "^0.12", extras = ["all"]}
 requests = "^2.32"
+click = "8.1.7"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.2"
