@@ -1,0 +1,12 @@
+{
+  "python.defaultInterpreterPath": ".venv/Scripts/python.exe",
+  "python.analysis.typeCheckingMode": "basic",
+  "editor.formatOnSave": true,
+  "ruff.enable": true,
+  "ruff.lint.args": ["--fix"],
+  "files.insertFinalNewline": true,
+  "files.trimTrailingWhitespace": true,
+  "terminal.integrated.defaultProfile.windows": "PowerShell",
+  "editor.wordWrap": "off",
+  "editor.rulers": [100]
+}
