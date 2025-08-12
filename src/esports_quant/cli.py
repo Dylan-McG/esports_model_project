@@ -1,4 +1,8 @@
 # Purpose: Typer CLI for dummy ingest/train/evaluate and OpenDota ingest+Elo.
+# Notes:
+# - Uses lazy imports inside ingest_opendota() so requests/OpenDota deps are only
+#   needed when that command is actually used.
+# - B008 suppressed inline because Typer uses callable defaults idiomatically.
 
 from __future__ import annotations  # enable future typing
 
@@ -10,8 +14,6 @@ import pandas as pd  # parquet IO
 import typer  # CLI
 
 from .data.dummy import ingest_to_parquet, make_dummy_matches  # dummy generator
-from .data.opendota import ingest_opendota_to_parquet  # raw OpenDota→Parquet
-from .features.elo import build_elo_features  # Elo features
 from .models.baseline import train_baseline  # training
 from .utils.io import load_pickle  # load model artifact
 
@@ -29,8 +31,8 @@ def ingest(out_dir: str = typer.Option("data/processed", help="Output directory"
     return str(out_path)
 
 
-@app.command()
-def ingest_opendota(
+@app.command(name="ingest_opendota")
+def ingest_opendota(  # noqa: D401
     limit: int = typer.Option(2000, help="How many recent pro matches to fetch"),  # noqa: B008
     raw_dir: str = typer.Option("data/raw", help="Where to store raw normalized Parquet"),  # noqa: B008
     processed_path: Path = typer.Option(  # noqa: B008
@@ -38,12 +40,21 @@ def ingest_opendota(
         help="Output processed Parquet path",
     ),
 ) -> None:
+    """
+    Fetch recent pro matches from OpenDota → build Elo features → write processed Parquet.
+    """
+    # Lazy imports so other commands don't require requests/OpenDota unless needed
+    from .data.opendota import ingest_opendota_to_parquet  # local import to avoid hard dep
+    from .features.elo import build_elo_features  # local import
+
     # 1) Fetch normalized raw matches to Parquet
     raw_path = ingest_opendota_to_parquet(limit=limit, out_dir=raw_dir)
     typer.echo(f"Raw written: {raw_path}")
+
     # 2) Load raw data and compute Elo features
     df_raw = pd.read_parquet(raw_path)
     df_feat = build_elo_features(df_raw)
+
     # 3) Ensure output directory exists and write processed dataset
     processed_path.parent.mkdir(parents=True, exist_ok=True)
     df_feat.to_parquet(processed_path, index=False)
