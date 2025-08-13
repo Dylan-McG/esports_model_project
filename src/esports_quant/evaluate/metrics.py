@@ -1,32 +1,58 @@
-# Purpose: Core evaluation metrics (log loss, Brier, ECE).
+from __future__ import annotations
 
-from __future__ import annotations  # typing future
+from dataclasses import dataclass
 
-import numpy as np  # arrays
-from sklearn.metrics import brier_score_loss, log_loss  # standard metrics
+import numpy as np
+from sklearn.calibration import calibration_curve
+from sklearn.metrics import brier_score_loss, log_loss
 
 
-def ece(y_true: np.ndarray, y_prob: np.ndarray, n_bins: int = 10) -> float:
-    y_true = np.asarray(y_true).astype(float).ravel()  # to float vector
-    y_prob = np.asarray(y_prob).astype(float).ravel()  # to float vector
-    bins = np.linspace(0.0, 1.0, n_bins + 1)  # [0..1] bins
-    bin_ids = np.digitize(y_prob, bins[1:-1], right=True)  # assign bins
-    total = 0.0  # accumulator
-    for b in range(n_bins):  # iterate bins
-        in_bin = bin_ids == b  # mask for bin b
-        if not np.any(in_bin):  # skip empty bins
+@dataclass(frozen=True)
+class MetricBundle:
+    log_loss: float
+    brier: float
+    ece: float
+
+
+def expected_calibration_error(
+    y_true: np.ndarray,
+    y_prob: np.ndarray,
+    n_bins: int = 10,
+    strategy: str = "uniform",
+) -> float:
+    """
+    ECE = sum_k (n_k / N) * |mean(pred_k) - frac_pos_k|, using sklearn's binning.
+    """
+    y_true = np.asarray(y_true)
+    y_prob = np.asarray(y_prob)
+
+    frac_pos, mean_pred = calibration_curve(y_true, y_prob, n_bins=n_bins, strategy=strategy)
+
+    if strategy == "uniform":
+        edges = np.linspace(0.0, 1.0, n_bins + 1)
+        inds = np.clip(np.digitize(y_prob, edges) - 1, 0, n_bins - 1)
+    else:
+        edges = np.quantile(y_prob, np.linspace(0, 1, n_bins + 1))
+        edges[0], edges[-1] = 0.0, 1.0
+        inds = np.clip(np.digitize(y_prob, edges, right=True) - 1, 0, n_bins - 1)
+
+    counts = np.bincount(inds, minlength=n_bins).astype(float)
+    weights = counts / max(1, counts.sum())
+
+    ece = 0.0
+    cursor = 0
+    for b in range(n_bins):
+        if counts[b] == 0:
             continue
-        p_hat = y_prob[in_bin].mean()  # avg predicted prob
-        y_bar = y_true[in_bin].mean()  # empirical freq
-        w = np.mean(in_bin)  # bin weight (fraction)
-        total += w * abs(y_bar - p_hat)  # weighted gap
-    return float(total)  # ECE scalar
+        gap = abs(mean_pred[cursor] - frac_pos[cursor])
+        ece += weights[b] * gap
+        cursor += 1
+    return float(ece)
 
 
-def compute_core_metrics(y_true: np.ndarray, y_prob: np.ndarray) -> dict[str, float]:
-    y_prob = np.clip(y_prob, 1e-6, 1 - 1e-6)  # avoid log(0)
-    return {
-        "log_loss": log_loss(y_true, y_prob),
-        "brier": brier_score_loss(y_true, y_prob),
-        "ece": ece(y_true, y_prob, n_bins=10),
-    }
+def bundle_metrics(y_true: np.ndarray, y_prob: np.ndarray, n_bins: int = 10, strategy: str = "uniform") -> MetricBundle:
+    return MetricBundle(
+        log_loss=log_loss(y_true, np.clip(y_prob, 1e-12, 1 - 1e-12)),
+        brier=brier_score_loss(y_true, y_prob),
+        ece=expected_calibration_error(y_true, y_prob, n_bins=n_bins, strategy=strategy),
+    )

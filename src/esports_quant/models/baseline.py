@@ -1,46 +1,70 @@
-# Purpose: Minimal logistic baseline on simple features.
+# ruff: noqa: D401
+"""
+Baseline model definitions and training helpers.
 
-from __future__ import annotations  # typing future
+We expose a reusable `make_baseline_pipeline()` that the rest of the pipeline
+(calibration, backtests, CLI) can import without duplication.
 
-from dataclasses import dataclass  # result container
-from pathlib import Path  # paths
+Features expected (by column name):
+    - "rating_diff" : float
+    - "bo"          : int (1/3/5)
+Target:
+    - "team_a_win"  : 0/1
+"""
 
-import pandas as pd  # dataframes
-from sklearn.linear_model import LogisticRegression  # classifier
-from sklearn.model_selection import train_test_split  # split
-from sklearn.pipeline import Pipeline  # compose steps
-from sklearn.preprocessing import StandardScaler  # scaling
+from __future__ import annotations
 
-from ..evaluate.metrics import compute_core_metrics  # metrics
-from ..utils.io import save_pickle  # persist model
+from pathlib import Path
+
+import joblib
+import numpy as np
+import pandas as pd
+from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 
 
-@dataclass
-class TrainResult:
-    model_path: Path  # saved artifact
-    metrics: dict[str, float]  # validation metrics
+def make_baseline_pipeline(random_state: int = 2025) -> Pipeline:
+    """
+    Build a simple, robust baseline:
+        StandardScaler -> LogisticRegression
+
+    We scale both numerical features ("rating_diff", "bo"). LR is well-behaved,
+    fast to train, and provides calibrated-ish probabilities once calibrated
+    downstream.
+    """
+    clf = LogisticRegression(max_iter=200, random_state=random_state)
+    pipe = Pipeline(
+        steps=[
+            ("scaler", StandardScaler()),
+            ("clf", clf),
+        ]
+    )
+    return pipe
+
+
+def _split_xy(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    x = df[["rating_diff", "bo"]].to_numpy(dtype=float)
+    y = df["team_a_win"].to_numpy(dtype=int)
+    return x, y
 
 
 def train_baseline(
-    df: pd.DataFrame, artifacts_dir: str | Path = "artifacts", seed: int = 7
-) -> TrainResult:
-    feature_cols = ["rating_diff", "bo"]  # features
-    X = df[feature_cols].values  # feature matrix
-    y = df["team_a_win"].values  # labels
-    X_tr, X_va, y_tr, y_va = train_test_split(  # split
-        X, y, test_size=0.25, random_state=seed, stratify=y
-    )
-    pipe = Pipeline(  # scaler + logistic regression
-        steps=[
-            ("scaler", StandardScaler()),
-            ("logit", LogisticRegression(max_iter=1000, solver="lbfgs")),
-        ]
-    )
-    pipe.fit(X_tr, y_tr)  # train
-    y_prob = pipe.predict_proba(X_va)[:, 1]  # val probs
-    metrics = compute_core_metrics(y_va, y_prob)  # eval
-    model_dir = Path(artifacts_dir)  # ensure dir
-    model_dir.mkdir(parents=True, exist_ok=True)
-    model_path = model_dir / "baseline_logit.pkl"  # artifact path
-    save_pickle(pipe, model_path)  # save model
-    return TrainResult(model_path=model_path, metrics=metrics)  # result
+    df: pd.DataFrame,
+    artifacts_dir: str | Path = "artifacts",
+    model_name: str = "baseline_logit.pkl",
+) -> Path:
+    """
+    Fit baseline pipeline on all rows and persist to artifacts.
+    Returns the path to the saved model.
+    """
+    artifacts_path = Path(artifacts_dir)
+    artifacts_path.mkdir(parents=True, exist_ok=True)
+
+    x, y = _split_xy(df)
+    model = make_baseline_pipeline()
+    model.fit(x, y)
+
+    out_path = artifacts_path / model_name
+    joblib.dump(model, out_path)
+    return out_path

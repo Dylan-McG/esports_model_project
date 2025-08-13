@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Envs
+.env
+.venv/
+
+# Data & outputs
+data/raw/
+data/processed/
+artifacts/
+data/state/*
+
+# Notebooks & OS cruft
+.ipynb_checkpoints/
+.DS_Store
+Thumbs.db
+

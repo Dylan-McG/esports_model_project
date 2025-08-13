@@ -1,102 +1,174 @@
-# Purpose: Typer CLI for dummy ingest/train/evaluate and OpenDota ingest+Elo.
-# Notes:
-# - Uses lazy imports inside ingest_opendota() so requests/OpenDota deps are only
-#   needed when that command is actually used.
-# - B008 suppressed inline because Typer uses callable defaults idiomatically.
+from __future__ import annotations
 
-from __future__ import annotations  # enable future typing
+import json
+from pathlib import Path
+from typing import Annotated, Optional
 
-import json  # pretty print metrics
-from pathlib import Path  # path handling
-from typing import Any, cast  # casting for loaded model
+import joblib
+import pandas as pd
+import typer
 
-import pandas as pd  # parquet IO
-import typer  # CLI
+from .ingest.opendota import ingest_pro_matches
+from .ingest.opendota_details import BuildConfig, run_full_build
+from .models.baseline import train_baseline
 
-from .data.dummy import ingest_to_parquet, make_dummy_matches  # dummy generator
-from .models.baseline import train_baseline  # training
-from .utils.io import load_pickle  # load model artifact
-
-# Create the CLI app with a short help string
-app = typer.Typer(help="Esports Quant CLI — minimal pipeline + OpenDota ingest")
+app = typer.Typer(help="Esports Quant CLI — ingest, train, evaluate, calibrate, backtest")
 
 
-@app.command()
-def ingest(out_dir: str = typer.Option("data/processed", help="Output directory")) -> str:  # noqa: B008
-    # Generate deterministic dummy dataset and write Parquet
-    out_path = ingest_to_parquet(out_dir=out_dir)
-    # Print feedback for the user
-    typer.echo(f"Wrote: {out_path}")
-    # Return the path (useful in tests)
-    return str(out_path)
-
-
-@app.command(name="ingest_opendota")
-def ingest_opendota(  # noqa: D401
-    limit: int = typer.Option(2000, help="How many recent pro matches to fetch"),  # noqa: B008
-    raw_dir: str = typer.Option("data/raw", help="Where to store raw normalized Parquet"),  # noqa: B008
-    processed_path: Path = typer.Option(  # noqa: B008
-        Path("data/processed/matches.parquet"),
-        help="Output processed Parquet path",
+# -----------------------------------------------------------------------------
+# Ingest OpenDota (quick proMatches → matches.parquet via lightweight path)
+# -----------------------------------------------------------------------------
+@app.command("ingest-opendota", help="Fetch pro matches, build Elo features, write processed Parquet.")
+def cmd_ingest_opendota(
+    limit: Annotated[int, typer.Option(help="How many most-recent pro matches to fetch")] = 1000,
+    processed_path: Annotated[Path, typer.Option(help="Output processed Parquet path")] = Path(
+        "data/processed/matches.parquet"
     ),
 ) -> None:
     """
-    Fetch recent pro matches from OpenDota → build Elo features → write processed Parquet.
+    Uses the light ingest path (summary records only).
     """
-    # Lazy imports so other commands don't require requests/OpenDota unless needed
-    from .data.opendota import ingest_opendota_to_parquet  # local import to avoid hard dep
-    from .features.elo import build_elo_features  # local import
-
-    # 1) Fetch normalized raw matches to Parquet
-    raw_path = ingest_opendota_to_parquet(limit=limit, out_dir=raw_dir)
-    typer.echo(f"Raw written: {raw_path}")
-
-    # 2) Load raw data and compute Elo features
-    df_raw = pd.read_parquet(raw_path)
-    df_feat = build_elo_features(df_raw)
-
-    # 3) Ensure output directory exists and write processed dataset
-    processed_path.parent.mkdir(parents=True, exist_ok=True)
-    df_feat.to_parquet(processed_path, index=False)
-    typer.echo(f"Processed written: {processed_path}")
+    out = ingest_pro_matches(limit=limit, processed_path=processed_path)
+    typer.echo(f"Wrote processed dataset to: {out}")
 
 
+# -----------------------------------------------------------------------------
+# Ingest OpenDota (details: cache + tidy + patch + timelines)
+# -----------------------------------------------------------------------------
+@app.command("ingest-opendota-details", help="Cache /proMatches + /matches/{id} and build tidy Parquets.")
+def cmd_ingest_opendota_details(
+    limit_ids: Annotated[
+        Optional[int],
+        typer.Option(help="Limit how many most-recent match IDs to process (None = all fetched)."),
+    ] = 5000,
+    include_players: Annotated[bool, typer.Option("--players", help="Also build match_players.parquet.")] = False,
+    elo_k: Annotated[float, typer.Option(help="Elo K-factor for pre-match diff.")] = 20.0,
+    elo_base: Annotated[float, typer.Option(help="Elo base rating.")] = 1500.0,
+) -> None:
+    """
+    Full ingestion with raw caching and rich tidy outputs:
+      - data/raw/proMatches/proMatches_flat.json (ID snapshot)
+      - data/raw/matchDetails/{match_id}.json (detail cache)
+      - data/processed/matches.parquet (match-level with Elo, patch, timelines)
+      - data/processed/match_picks.parquet (draft picks/bans)
+      - data/processed/match_players.parquet (optional, --players)
+    """
+    cfg = BuildConfig(limit_ids=limit_ids, cache_players=include_players, elo_k=elo_k, elo_base=elo_base)
+    report = run_full_build(cfg)
+    typer.echo(json.dumps(report, indent=2))
+
+
+# -----------------------------------------------------------------------------
+# Train
+# -----------------------------------------------------------------------------
 @app.command()
 def train(
-    data_path: str = typer.Option("data/processed/matches.parquet", help="Parquet path"),  # noqa: B008
-    artifacts_dir: str = typer.Option("artifacts", help="Artifacts directory"),  # noqa: B008
+    data_path: Annotated[Path, typer.Option(help="Processed Parquet path")] = Path("data/processed/matches.parquet"),
+    artifacts_dir: Annotated[Path, typer.Option(help="Where to store models")] = Path("artifacts"),
 ) -> None:
-    # Load dataset
     df = pd.read_parquet(data_path)
-    # Train baseline and compute validation metrics
-    result = train_baseline(df, artifacts_dir=artifacts_dir)
-    # Report artifact path and metrics
-    typer.echo(f"Model saved to: {result.model_path}")
-    typer.echo(json.dumps(result.metrics, indent=2))
+    out = train_baseline(df, artifacts_dir=artifacts_dir)
+    typer.echo(f"Model saved to: {out}")
 
+    # Quick metrics on train (smoke check; not a holdout)
+    x = df[["rating_diff", "bo"]].to_numpy()
+    y = df["team_a_win"].to_numpy()
+    model = joblib.load(out)
+    y_prob = model.predict_proba(x)[:, 1]
 
-@app.command()
-def evaluate(
-    artifacts_dir: str = typer.Option("artifacts", help="Artifacts directory"),  # noqa: B008
-    seed: int = typer.Option(99, help="Seed for fresh eval data"),  # noqa: B008
-) -> None:
-    # Create a fresh synthetic dataset for a quick sanity evaluation
-    df = make_dummy_matches(seed=seed)
-    # Extract features and labels
-    X = df[["rating_diff", "bo"]].values
-    y_true = df["team_a_win"].values
-    # Load the persisted model; cast to Any so mypy doesn't complain about attributes
-    model = cast(Any, load_pickle(Path(artifacts_dir) / "baseline_logit.pkl"))
-    # Predict probabilities for the positive class
-    y_prob = model.predict_proba(X)[:, 1]
-    # Compute metrics (local import avoids potential circular imports at module load)
-    from .evaluate.metrics import compute_core_metrics
+    from sklearn.metrics import brier_score_loss, log_loss
 
-    # Calculate and print metrics as JSON
-    metrics = compute_core_metrics(y_true, y_prob)
+    metrics = {
+        "log_loss": float(log_loss(y, y_prob)),
+        "brier": float(brier_score_loss(y, y_prob)),
+    }
     typer.echo(json.dumps(metrics, indent=2))
 
 
+# -----------------------------------------------------------------------------
+# Evaluate
+# -----------------------------------------------------------------------------
+@app.command()
+def evaluate(
+    data_path: Annotated[Path, typer.Option(help="Processed Parquet path")] = Path("data/processed/matches.parquet"),
+    model_path: Annotated[Path, typer.Option(help="Model to evaluate")] = Path("artifacts/baseline_logit.pkl"),
+) -> None:
+    from sklearn.metrics import brier_score_loss, log_loss
+
+    df = pd.read_parquet(data_path)
+    model = joblib.load(model_path)
+
+    x = df[["rating_diff", "bo"]].to_numpy()
+    y = df["team_a_win"].to_numpy()
+    y_prob = model.predict_proba(x)[:, 1]
+
+    metrics = {
+        "log_loss": float(log_loss(y, y_prob)),
+        "brier": float(brier_score_loss(y, y_prob)),
+    }
+    typer.echo(json.dumps(metrics, indent=2))
+
+
+# -----------------------------------------------------------------------------
+# Calibrate
+# -----------------------------------------------------------------------------
+@app.command(help="Fit a probability calibrator (Platt or Isotonic) on processed data.")
+def calibrate(
+    method: Annotated[
+        str,
+        typer.Option(help="Calibration method. One of: 'platt' or 'isotonic' (case-insensitive)."),
+    ] = "platt",
+    data_path: Annotated[Path, typer.Option(help="Processed Parquet")] = Path("data/processed/matches.parquet"),
+    out_model: Annotated[Path, typer.Option(help="Output calibrated model")] = Path("artifacts/calibrated.pkl"),
+    out_plot: Annotated[Path, typer.Option(help="Calibration plot path")] = Path("artifacts/calibration.png"),
+    out_metrics: Annotated[Path, typer.Option(help="Calibration metrics JSON")] = Path(
+        "artifacts/calibration_metrics.json"
+    ),
+) -> None:
+    from .evaluate.calibration import calibrate_and_save
+
+    m = method.strip().lower()
+    if m not in {"platt", "isotonic"}:
+        raise typer.BadParameter("method must be 'platt' or 'isotonic'")
+
+    df = pd.read_parquet(data_path)
+    metrics = calibrate_and_save(
+        df=df,
+        method=m,
+        out_model=str(out_model),
+        out_plot=str(out_plot),
+        out_metrics=str(out_metrics),
+    )
+    typer.echo(json.dumps(metrics, indent=2))
+
+
+# -----------------------------------------------------------------------------
+# Backtest (rolling)
+# -----------------------------------------------------------------------------
+@app.command(help="Rolling-window backtest over time-sorted data.")
+def backtest(
+    data_path: Annotated[Path, typer.Option(help="Processed Parquet")] = Path("data/processed/matches.parquet"),
+    n_splits: Annotated[int, typer.Option(help="Number of folds")] = 5,
+    min_train: Annotated[int, typer.Option(help="Min rows in first train window")] = 800,
+    step: Annotated[int, typer.Option(help="Rows to advance per fold")] = 200,
+    out_plot: Annotated[Path, typer.Option(help="Plot output")] = Path("artifacts/backtest_metrics.png"),
+    out_csv: Annotated[Path, typer.Option(help="CSV output")] = Path("artifacts/backtest_metrics.csv"),
+    datetime_col: Annotated[str, typer.Option(help="Timestamp column")] = "start_time",
+) -> None:
+    from .evaluate.backtest import rolling_backtest
+
+    df = pd.read_parquet(data_path)
+    out = rolling_backtest(
+        df=df,
+        datetime_col=datetime_col,
+        n_splits=n_splits,
+        min_train=min_train,
+        step=step,
+        out_plot=str(out_plot),
+        out_csv=str(out_csv),
+    )
+    typer.echo(json.dumps(out, indent=2))
+
+
 if __name__ == "__main__":
-    # Allow `python -m esports_quant.cli ...`
     app()
