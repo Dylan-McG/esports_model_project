@@ -8,8 +8,10 @@ __pycache__/
 .venv/
 
 # Data & outputs
-data/raw/
-data/processed/
+data/processed/*
+!data/processed/README.md
+data/raw/*
+!data/raw/README.md
 artifacts/
 data/state/*
 

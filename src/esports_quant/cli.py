@@ -11,8 +11,26 @@ import typer
 from .ingest.opendota import ingest_pro_matches
 from .ingest.opendota_details import BuildConfig, run_full_build
 from .models.baseline import train_baseline
+from esports_quant.features.build_features import build_match_team_features
 
 app = typer.Typer(help="Esports Quant CLI — ingest, train, evaluate, calibrate, backtest")
+
+
+# -----------------------------------------------------------------------------
+# Build featurs - Wire CLI command
+# -----------------------------------------------------------------------------
+@app.command("build-features")
+def cmd_build_features() -> None:
+    """Build features and save to data/processed/features.parquet."""
+    proc = Path("data/processed")
+    matches = pd.read_parquet(proc / "matches.parquet")
+    picks = pd.read_parquet(proc / "match_picks.parquet")
+    players = pd.read_parquet(proc / "match_players.parquet") if (proc / "match_players.parquet").exists() else None
+
+    feats = build_match_team_features(matches, picks, players=players)
+    out = proc / "features.parquet"
+    feats.to_parquet(out, index=False)
+    print(f"[OK] Wrote features ({len(feats)} rows) to {out}")
 
 
 # -----------------------------------------------------------------------------
