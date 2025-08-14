@@ -8,16 +8,17 @@ import joblib
 import pandas as pd
 import typer
 
+from esports_quant.features.build_features import build_match_team_features
+from esports_quant.evaluate.calibration import calibrate_and_save
 from .ingest.opendota import ingest_pro_matches
 from .ingest.opendota_details import BuildConfig, run_full_build
 from .models.baseline import train_baseline
-from esports_quant.features.build_features import build_match_team_features
 
-app = typer.Typer(help="Esports Quant CLI — ingest, train, evaluate, calibrate, backtest")
+app = typer.Typer(help="Esports Quant CLI — ingest, build features, train, evaluate, calibrate, backtest")
 
 
 # -----------------------------------------------------------------------------
-# Build featurs - Wire CLI command
+# Build features
 # -----------------------------------------------------------------------------
 @app.command("build-features")
 def cmd_build_features() -> None:
@@ -25,16 +26,17 @@ def cmd_build_features() -> None:
     proc = Path("data/processed")
     matches = pd.read_parquet(proc / "matches.parquet")
     picks = pd.read_parquet(proc / "match_picks.parquet")
-    players = pd.read_parquet(proc / "match_players.parquet") if (proc / "match_players.parquet").exists() else None
+    players_path = proc / "match_players.parquet"
+    players = pd.read_parquet(players_path) if players_path.exists() else None
 
     feats = build_match_team_features(matches, picks, players=players)
     out = proc / "features.parquet"
     feats.to_parquet(out, index=False)
-    print(f"[OK] Wrote features ({len(feats)} rows) to {out}")
+    print(f"[OK] Wrote features ({len(feats)}) rows to {out}")
 
 
 # -----------------------------------------------------------------------------
-# Ingest OpenDota (quick proMatches → matches.parquet via lightweight path)
+# Ingest OpenDota (quick path: proMatches → matches.parquet)
 # -----------------------------------------------------------------------------
 @app.command("ingest-opendota", help="Fetch pro matches, build Elo features, write processed Parquet.")
 def cmd_ingest_opendota(
@@ -43,9 +45,7 @@ def cmd_ingest_opendota(
         "data/processed/matches.parquet"
     ),
 ) -> None:
-    """
-    Uses the light ingest path (summary records only).
-    """
+    """Uses the light ingest path (summary records only)."""
     out = ingest_pro_matches(limit=limit, processed_path=processed_path)
     typer.echo(f"Wrote processed dataset to: {out}")
 
@@ -65,11 +65,12 @@ def cmd_ingest_opendota_details(
 ) -> None:
     """
     Full ingestion with raw caching and rich tidy outputs:
-      - data/raw/proMatches/proMatches_flat.json (ID snapshot)
+      - data/raw/proMatches/page_*.json (ID snapshots)
       - data/raw/matchDetails/{match_id}.json (detail cache)
-      - data/processed/matches.parquet (match-level with Elo, patch, timelines)
+      - data/processed/matches.parquet (match-level with patch/momentum/etc.)
       - data/processed/match_picks.parquet (draft picks/bans)
       - data/processed/match_players.parquet (optional, --players)
+      - events_* / teamfights / players_timeseries parquet tables
     """
     cfg = BuildConfig(limit_ids=limit_ids, cache_players=include_players, elo_k=elo_k, elo_base=elo_base)
     report = run_full_build(cfg)
@@ -84,6 +85,7 @@ def train(
     data_path: Annotated[Path, typer.Option(help="Processed Parquet path")] = Path("data/processed/matches.parquet"),
     artifacts_dir: Annotated[Path, typer.Option(help="Where to store models")] = Path("artifacts"),
 ) -> None:
+    """Train baseline model and print quick (in-sample) metrics."""
     df = pd.read_parquet(data_path)
     out = train_baseline(df, artifacts_dir=artifacts_dir)
     typer.echo(f"Model saved to: {out}")
@@ -111,6 +113,7 @@ def evaluate(
     data_path: Annotated[Path, typer.Option(help="Processed Parquet path")] = Path("data/processed/matches.parquet"),
     model_path: Annotated[Path, typer.Option(help="Model to evaluate")] = Path("artifacts/baseline_logit.pkl"),
 ) -> None:
+    """Evaluate a saved model on the given dataset."""
     from sklearn.metrics import brier_score_loss, log_loss
 
     df = pd.read_parquet(data_path)
@@ -136,15 +139,14 @@ def calibrate(
         str,
         typer.Option(help="Calibration method. One of: 'platt' or 'isotonic' (case-insensitive)."),
     ] = "platt",
-    data_path: Annotated[Path, typer.Option(help="Processed Parquet")] = Path("data/processed/matches.parquet"),
-    out_model: Annotated[Path, typer.Option(help="Output calibrated model")] = Path("artifacts/calibrated.pkl"),
+    data_path: Annotated[Path, typer.Option(help="Processed Parquet path")] = Path("data/processed/matches.parquet"),
+    out_model: Annotated[Path, typer.Option(help="Output calibrated model path")] = Path("artifacts/calibrated.pkl"),
     out_plot: Annotated[Path, typer.Option(help="Calibration plot path")] = Path("artifacts/calibration.png"),
-    out_metrics: Annotated[Path, typer.Option(help="Calibration metrics JSON")] = Path(
+    out_metrics: Annotated[Path, typer.Option(help="Calibration metrics JSON path")] = Path(
         "artifacts/calibration_metrics.json"
     ),
 ) -> None:
-    from .evaluate.calibration import calibrate_and_save
-
+    """Calibrate probabilities and save artifacts."""
     m = method.strip().lower()
     if m not in {"platt", "isotonic"}:
         raise typer.BadParameter("method must be 'platt' or 'isotonic'")
@@ -161,18 +163,19 @@ def calibrate(
 
 
 # -----------------------------------------------------------------------------
-# Backtest (rolling)
+# Backtest (rolling) — stub wiring; implement in evaluate/backtest.py
 # -----------------------------------------------------------------------------
 @app.command(help="Rolling-window backtest over time-sorted data.")
 def backtest(
-    data_path: Annotated[Path, typer.Option(help="Processed Parquet")] = Path("data/processed/matches.parquet"),
+    data_path: Annotated[Path, typer.Option(help="Processed Parquet path")] = Path("data/processed/matches.parquet"),
     n_splits: Annotated[int, typer.Option(help="Number of folds")] = 5,
     min_train: Annotated[int, typer.Option(help="Min rows in first train window")] = 800,
     step: Annotated[int, typer.Option(help="Rows to advance per fold")] = 200,
-    out_plot: Annotated[Path, typer.Option(help="Plot output")] = Path("artifacts/backtest_metrics.png"),
-    out_csv: Annotated[Path, typer.Option(help="CSV output")] = Path("artifacts/backtest_metrics.csv"),
+    out_plot: Annotated[Path, typer.Option(help="Plot output path")] = Path("artifacts/backtest_metrics.png"),
+    out_csv: Annotated[Path, typer.Option(help="CSV output path")] = Path("artifacts/backtest_metrics.csv"),
     datetime_col: Annotated[str, typer.Option(help="Timestamp column")] = "start_time",
 ) -> None:
+    """Run a simple rolling backtest and write metrics/plot."""
     from .evaluate.backtest import rolling_backtest
 
     df = pd.read_parquet(data_path)
