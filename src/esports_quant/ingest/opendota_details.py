@@ -6,7 +6,7 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, cast, Iterable, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -253,7 +253,7 @@ def _safe(lst: Optional[List[Any]], idx: int) -> Optional[Any]:
 
 
 def _extract_picks_bans(match: Dict[str, Any]) -> List[Dict[str, Any]]:
-    out = []
+    out: List[Dict[str, Any]] = []
     for pb in match.get("picks_bans", []) or []:
         row = {
             "match_id": match.get("match_id"),
@@ -267,7 +267,7 @@ def _extract_picks_bans(match: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def _extract_players(match: Dict[str, Any]) -> List[Dict[str, Any]]:
-    rows = []
+    rows: List[Dict[str, Any]] = []
     for pl in match.get("players", []) or []:
         row = {
             "match_id": match.get("match_id"),
@@ -296,22 +296,7 @@ def _extract_players(match: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 def _extract_objectives(match: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
-    Extract objective/timeline events from a match, normalizing types so we can write Parquet safely.
-    OpenDota 'objectives' is an array of dicts with heterogeneous keys; importantly:
-      - 'type' is a string (e.g., 'building_kill', 'CHAT_MESSAGE_ROSHAN_KILL', etc.)
-      - 'key' may be an int OR a string (e.g., building name); we coerce to STRING.
-      - 'time' is seconds from game start (can be int); we coerce to int when possible.
-      - 'player_slot' / 'slot' may appear; we try to coerce to int, else NA.
-      - 'team' often 0 (Radiant) or 1 (Dire); we coerce to int when possible, else NA.
-
-    Output schema (stable, Parquet-friendly):
-      match_id:int64
-      time_s:int32 (nullable)
-      type:string
-      key:string
-      team:Int8 (nullable)
-      player_slot:Int16 (nullable)
-      slot:Int16 (nullable)
+    Normalize heterogeneous 'objectives' events for Parquet.
     """
     from math import isnan
 
@@ -322,13 +307,11 @@ def _extract_objectives(match: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     mid = match.get("match_id")
 
-    def _to_int_or_na(v) -> Optional[int]:
+    def _to_int_or_na(v: Any) -> Optional[int]:
         try:
             if v is None:
                 return None
-            # strings like "12" or actual ints
-            iv = int(v)
-            return iv
+            return int(v)
         except Exception:
             return None
 
@@ -336,33 +319,27 @@ def _extract_objectives(match: Dict[str, Any]) -> List[Dict[str, Any]]:
         if not isinstance(ev, dict):
             continue
 
-        # time
         t = ev.get("time")
-        t_int: Optional[int] = None
+        t_int: Optional[int]
         try:
-            # some payloads are float-y; clamp to int seconds
             t_int = int(t) if t is not None and not (isinstance(t, float) and isnan(t)) else None
         except Exception:
             t_int = None
 
-        # normalize type/key -> strings
-        ev_type = ev.get("type")
-        ev_key = ev.get("key")
+        type_str = "" if ev.get("type") is None else str(ev.get("type"))
+        key_str = "" if ev.get("key") is None else str(ev.get("key"))
 
-        # force string type for both
-        type_str = "" if ev_type is None else str(ev_type)
-        key_str = "" if ev_key is None else str(ev_key)
-
-        row = {
-            "match_id": mid,
-            "time_s": t_int,
-            "type": type_str,
-            "key": key_str,
-            "team": _to_int_or_na(ev.get("team")),
-            "player_slot": _to_int_or_na(ev.get("player_slot")),
-            "slot": _to_int_or_na(ev.get("slot")),
-        }
-        rows.append(row)
+        rows.append(
+            {
+                "match_id": mid,
+                "time_s": t_int,
+                "type": type_str,
+                "key": key_str,
+                "team": _to_int_or_na(ev.get("team")),
+                "player_slot": _to_int_or_na(ev.get("player_slot")),
+                "slot": _to_int_or_na(ev.get("slot")),
+            }
+        )
 
     return rows
 
@@ -374,7 +351,6 @@ def _extract_kills(match: Dict[str, Any]) -> List[Dict[str, Any]]:
         killer_slot = pl.get("player_slot")
         killer_hero = pl.get("hero_id")
         for k in pl.get("kills_log", []) or []:
-            # kills_log items often have {'time': int, 'key': 'npc_dota_hero_*'}
             rows.append(
                 {
                     "match_id": match.get("match_id"),
@@ -382,7 +358,7 @@ def _extract_kills(match: Dict[str, Any]) -> List[Dict[str, Any]]:
                     "killer_account_id": killer_acc,
                     "killer_player_slot": killer_slot,
                     "killer_hero_id": killer_hero,
-                    "victim_key": k.get("key"),  # hero string; victim_id not always present
+                    "victim_key": k.get("key"),
                 }
             )
     return rows
@@ -411,15 +387,13 @@ def _extract_items(match: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 def _extract_abilities(match: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
-    Prefer 'ability_upgrades' (with time/level) if present; otherwise fall back to 'ability_upgrades_arr'
-    (only order, no timestamps).
+    Prefer 'ability_upgrades' (time/level) else fall back to order-only array.
     """
     rows: List[Dict[str, Any]] = []
     for pl in match.get("players", []) or []:
         acc = pl.get("account_id")
         hero = pl.get("hero_id")
         slot = pl.get("player_slot")
-        # Rich structure sometimes available:
         ab_up = pl.get("ability_upgrades")
         if isinstance(ab_up, list) and ab_up:
             for a in ab_up:
@@ -435,7 +409,6 @@ def _extract_abilities(match: Dict[str, Any]) -> List[Dict[str, Any]]:
                     }
                 )
             continue
-        # Fallback: just the order
         arr = pl.get("ability_upgrades_arr") or []
         for lvl, ability_id in enumerate(arr, start=1):
             rows.append(
@@ -459,7 +432,7 @@ def _extract_wards(match: Dict[str, Any]) -> List[Dict[str, Any]]:
         hero = pl.get("hero_id")
         slot = pl.get("player_slot")
 
-        def _rows(log: Optional[List[Dict[str, Any]]], ward_type: str):
+        def _rows(log: Optional[List[Dict[str, Any]]], ward_type: str) -> None:
             if not isinstance(log, list):
                 return
             for w in log:
@@ -483,6 +456,20 @@ def _extract_wards(match: Dict[str, Any]) -> List[Dict[str, Any]]:
     return rows
 
 
+def _coerce_int(val: Any) -> Optional[int]:
+    try:
+        return int(val) if val is not None else None
+    except Exception:
+        return None
+
+
+def _coerce_int_strict(val: Any) -> int:
+    try:
+        return int(val) if val is not None else 0
+    except Exception:
+        return 0
+
+
 def _extract_teamfights(match: Dict[str, Any]) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     tfs = match.get("teamfights")
@@ -498,8 +485,8 @@ def _extract_teamfights(match: Dict[str, Any]) -> List[Dict[str, Any]]:
         # Default aggregates
         rad_dmg = 0
         dire_dmg = 0
-        rad_deaths = None
-        dire_deaths = None
+        rad_deaths: Optional[int] = None
+        dire_deaths: Optional[int] = None
 
         # Handle deaths: list of player_slots OR single int
         total_deaths: Optional[int] = None
@@ -507,48 +494,52 @@ def _extract_teamfights(match: Dict[str, Any]) -> List[Dict[str, Any]]:
             total_deaths = len(deaths)
             r, d = 0, 0
             for val in deaths:
-                try:
-                    ps = int(val)
-                    if ps < 128:
-                        r += 1
-                    else:
-                        d += 1
-                except Exception:
-                    pass
+                ps_val = _coerce_int(val)
+                if ps_val is None:
+                    continue
+                if ps_val < 128:
+                    r += 1
+                else:
+                    d += 1
             rad_deaths, dire_deaths = r, d
         elif isinstance(deaths, int):
             total_deaths = deaths
 
         # Handle players: list OR dict keyed by slot
         if isinstance(players, list):
-            for i, p in enumerate(players):
-                dmg = p.get("damage", 0) or 0
-                ps = p.get("player_slot")
-                if ps is None:
+            for idx, player in enumerate(players):
+                p_dict = cast(Dict[str, Any], player or {})
+                dmg_list: int = _coerce_int_strict(p_dict.get("damage", 0))
+                ps_list: Optional[int] = _coerce_int(p_dict.get("player_slot"))
+
+                if ps_list is None:
                     # Heuristic: indexes 0..4 radiant, 5..9 dire
-                    if i < 5:
-                        rad_dmg += dmg
+                    if idx < 5:
+                        rad_dmg += dmg_list
                     else:
-                        dire_dmg += dmg
+                        dire_dmg += dmg_list
                 else:
-                    try:
-                        if int(ps) < 128:
-                            rad_dmg += dmg
-                        else:
-                            dire_dmg += dmg
-                    except Exception:
-                        pass
-        elif isinstance(players, dict):
-            for k, p in players.items():
-                dmg = (p or {}).get("damage", 0) or 0
-                try:
-                    ps = int(k) if str(k).isdigit() else (p.get("player_slot"))
-                    if ps is not None and int(ps) < 128:
-                        rad_dmg += dmg
+                    if ps_list < 128:
+                        rad_dmg += dmg_list
                     else:
-                        dire_dmg += dmg
-                except Exception:
-                    pass
+                        dire_dmg += dmg_list
+
+        elif isinstance(players, dict):
+            players_map = cast(Dict[str, Any], players)
+            for k, player in players_map.items():
+                p_dict = cast(Dict[str, Any], player or {})
+                dmg_dict: int = _coerce_int_strict(p_dict.get("damage", 0))
+
+                ps_dict: Optional[int] = None
+                if isinstance(k, (int, str)) and str(k).isdigit():
+                    ps_dict = int(k)
+                else:
+                    ps_dict = _coerce_int(p_dict.get("player_slot"))
+
+                if ps_dict is not None and ps_dict < 128:
+                    rad_dmg += dmg_dict
+                else:
+                    dire_dmg += dmg_dict
 
         rows.append(
             {
@@ -605,14 +596,23 @@ def _match_row(match: Dict[str, Any], to_patch) -> Dict[str, Any]:
     slope_25_end = _gold_slope(rga, 25, len(rga) - 1 if len(rga) > 25 else 25)
 
     # Best-of from series_type (1=bo1, 2=bo3, 3=bo5 typically)
-    series_type = match.get("series_type")
-    bo = {1: 1, 2: 3, 3: 5}.get(series_type, 1)
+    st_any = match.get("series_type")
+    try:
+        series_type: Optional[int] = int(st_any) if st_any is not None else None
+    except Exception:
+        series_type = None
+    bo_map: Dict[int, int] = {1: 1, 2: 3, 3: 5}
+    bo = bo_map.get(series_type if series_type is not None else 1, 1)
 
     # Rating diff placeholder (0 if not computed elsewhere yet)
     rating_diff = 0.0
 
     start_time_unix = match.get("start_time")
     patch = to_patch(start_time_unix) if to_patch else None
+
+    # Safe league access (mypy-friendly)
+    league = cast(Dict[str, Any], match.get("league") or {})
+    league_name = league.get("name") or match.get("league_name")
 
     return {
         "match_id": match.get("match_id"),
@@ -624,9 +624,7 @@ def _match_row(match: Dict[str, Any], to_patch) -> Dict[str, Any]:
         "dire_team_id": match.get("dire_team_id"),
         "dire_name": match.get("dire_name"),
         "leagueid": match.get("leagueid"),
-        "league_name": match.get("league", {}).get("name")
-        if isinstance(match.get("league"), dict)
-        else match.get("league_name"),
+        "league_name": league_name,
         "series_id": match.get("series_id"),
         "series_type": series_type,
         "bo": bo,
@@ -722,6 +720,8 @@ def build_tidy_from_cache(
 class BuildConfig:
     limit_ids: Optional[int] = None
     cache_players: bool = False
+    elo_k: float = 24.0
+    elo_base: float = 1500.0
 
 
 def run_full_build(cfg: BuildConfig) -> Dict[str, Any]:
@@ -767,7 +767,7 @@ def run_full_build(cfg: BuildConfig) -> Dict[str, Any]:
         "skipped_invalid_count": len(sample_invalid),
         "sample_skipped_404": sample_404,
         "sample_skipped_invalid": sample_invalid,
-        "missing_details_sample": [],  # could compute by comparing ids vs cached file names
+        "missing_details_sample": [],
         "matches_rows": len(matches),
         "picks_rows": len(picks),
         "players_rows": players_rows,

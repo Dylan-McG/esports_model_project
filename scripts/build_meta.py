@@ -1,3 +1,5 @@
+# build_meta.py
+
 from __future__ import annotations
 
 """
@@ -12,12 +14,16 @@ Run:
 
 import sys
 from pathlib import Path
+from typing import Any, Callable, Optional
 
 import pandas as pd
 
 # Optional: pull hero names from OpenDota constants (uses our client + cached constants)
 try:
-    from esports_quant.data.opendota import fetch_constants
+    from esports_quant.data.opendota import fetch_constants as _fetch_constants
+
+    # Typed alias so assigning None below is valid for mypy
+    fetch_constants: Optional[Callable[[str], Any]] = _fetch_constants
 except Exception:
     fetch_constants = None  # script still works without names
 
@@ -58,18 +64,21 @@ def hero_name_map() -> pd.DataFrame | None:
     except Exception:
         return None
 
-    # Normalize into a DataFrame
-    rows = []
+    # Normalize to a concrete list of dicts (avoid dict_values type issues)
+    items: list[dict[str, Any]] = []
     if isinstance(heroes, dict):
-        it = heroes.values()
+        for v in heroes.values():
+            if isinstance(v, dict):
+                items.append(v)
     elif isinstance(heroes, list):
-        it = heroes
+        for v in heroes:
+            if isinstance(v, dict):
+                items.append(v)
     else:
         return None
 
-    for rec in it:
-        if not isinstance(rec, dict):
-            continue
+    rows: list[dict[str, Any]] = []
+    for rec in items:
         hid = rec.get("id")
         name = rec.get("localized_name") or rec.get("name")
         if hid is None:
