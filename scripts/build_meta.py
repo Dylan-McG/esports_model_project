@@ -1,5 +1,3 @@
-# build_meta.py
-
 from __future__ import annotations
 
 """
@@ -14,7 +12,7 @@ Run:
 
 import sys
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, cast
 
 import pandas as pd
 
@@ -60,7 +58,7 @@ def hero_name_map() -> pd.DataFrame | None:
     if fetch_constants is None:
         return None
     try:
-        heroes = fetch_constants("heroes")  # usually a dict keyed by hero name
+        heroes: Any = fetch_constants("heroes")  # usually a dict keyed by hero name
     except Exception:
         return None
 
@@ -147,8 +145,9 @@ def build_patch_momentum(matches: pd.DataFrame) -> pd.DataFrame:
 
     momentum = matches.groupby("patch", dropna=False)[keep].agg(["mean", "median", "count"]).reset_index()
 
-    # Flatten MultiIndex columns
-    momentum.columns = ["patch"] + [f"{c}_{stat}" for c, stat in momentum.columns.tolist()[1:]]
+    # Flatten MultiIndex columns (cast helps mypy understand the tuple[str, str] pairs)
+    pairs = cast(list[tuple[str, str]], momentum.columns.tolist()[1:])
+    momentum.columns = ["patch"] + [f"{c}_{stat}" for c, stat in pairs]
     return momentum.sort_values("patch").reset_index(drop=True)
 
 
@@ -160,7 +159,7 @@ def write_outputs(hero_patch: pd.DataFrame, momentum: pd.DataFrame) -> None:
     momentum.to_csv(OUT_MOMENTUM_CSV, index=False)
 
     # Latest patch snapshot (top 30 by games, then win rate)
-    latest_patch = None
+    latest_patch: str | None = None
     if "patch" in hero_patch.columns and not hero_patch["patch"].dropna().empty:
         latest_patch = hero_patch["patch"].astype(str).dropna().max()
 

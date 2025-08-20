@@ -80,6 +80,110 @@ Calibrates model probabilities (Platt / isotonic) and writes:
 - `teamfights.parquet` — per-fight aggregates (damage, deaths)
 - `players_timeseries.parquet` — per-minute gold/xp/last_hits/denies
 
+## Sanity Report & Dataset Validation
+
+We have added a **comprehensive data sanity check and descriptive reporting script** to validate processed datasets and produce quick-to-explore summary files.
+
+---
+
+### Script Location
+scripts/sanity_report.py
+
+
+---
+
+### Purpose
+- Verify that **all processed parquet files** are present and contain data.
+- Print a quick **footprint summary** of row counts across all datasets.
+- Generate **small sample CSVs** for manual inspection.
+- Produce **descriptive statistics** (counts, medians, quantiles) that give an immediate sense of dataset health and shape.
+- Serve as the **single entry point** for running all dataset validation checks.
+
+---
+
+### Usage
+Run from the project root:
+```bash
+poetry run python scripts/sanity_report.py
+
+No arguments are required.
+The script will automatically locate files in:
+
+data/processed/
+
+### Example Output:
+
+[ok] loaded matches.parquet: 517 rows
+[ok] loaded match_picks.parquet: 12,229 rows
+...
+[footprint]
+{
+  "matches_rows": 517,
+  "picks_rows": 12229,
+  ...
+}
+  [wrote] data\processed\sanity\sample_matches_head.csv
+  [wrote] data\processed\sanity\matches_by_patch.csv
+  ...
+[done] sanity report CSVs written under data/processed/sanity/
+
+# Output CSVs
+
+Generated in: data/processed/sanity/
+
+File	Description
+sample_matches_head.csv	First few rows of matches.parquet
+matches_by_patch.csv	Count of matches grouped by patch
+patch_momentum_summary.csv	Gold advantage momentum statistics per patch
+draft_hero_wr_sample.csv	Hero winrate sample by draft order
+timing_sample.csv	Example timing events per match
+timing_quantiles.csv	Quantile statistics for event timings
+item_first_times_sample.csv	First purchase timings for core items
+item_hero_median_times.csv	Median purchase time per hero & item
+ability_first10_sample.csv	First 10 ability upgrades per hero
+minute10_hero_side_means.csv	Average stats per hero & side at 10 min
+event_coverage_sample.csv	Sample showing coverage across event types
+
+## Hero Name Handling
+
+The script ensures hero_name exists in the match picks dataset before performing winrate or draft grouping.
+If missing, it maps from hero_id using the load_hero_id_to_name() helper.
+
+## Typical Workflow
+
+After ingesting and processing OpenDota data:
+
+# 1. Ingest basic match list
+poetry run python -m esports_quant.cli ingest-opendota --limit 500
+
+# 2️. Ingest full match details (rich events)
+poetry run python -m esports_quant.cli ingest-opendota-details --limit-ids 500 --players
+
+# 3️. Run sanity checks & descriptive stats
+poetry run python scripts/sanity_report.py
+
+## Repository Structure
+
+esports_model_project/
+│
+├── data/
+│   ├── raw/                  # Raw ingested parquet files
+│   ├── processed/            # Cleaned / transformed parquet files
+│   │   └── sanity/           # Output of sanity_report.py
+│
+├── scripts/
+│   ├── build_meta.py         # Builds meta statistics for modeling
+│   └── sanity_report.py      # ✅ New: full dataset validation & metrics
+│
+├── src/esports_quant/
+│   ├── ingest/               # OpenDota ingestion modules
+│   ├── evaluate/             # Evaluation & metrics
+│   ├── cli.py                # Command-line entrypoints
+│   └── config.py             # Config management
+│
+├── pyproject.toml            # Poetry project definition
+└── README.md                 # Project documentation
+
 ---
 
 ## Environment & API Key

@@ -1,3 +1,5 @@
+# esports_model_project\src\esports_quant\ingest\opendota_details.py
+
 from __future__ import annotations
 
 import argparse
@@ -613,6 +615,7 @@ def _match_row(match: Dict[str, Any], to_patch) -> Dict[str, Any]:
     # Safe league access (mypy-friendly)
     league = cast(Dict[str, Any], match.get("league") or {})
     league_name = league.get("name") or match.get("league_name")
+    league_id = league.get("id") or match.get("leagueid")
 
     return {
         "match_id": match.get("match_id"),
@@ -623,8 +626,8 @@ def _match_row(match: Dict[str, Any], to_patch) -> Dict[str, Any]:
         "radiant_name": match.get("radiant_name"),
         "dire_team_id": match.get("dire_team_id"),
         "dire_name": match.get("dire_name"),
-        "leagueid": match.get("leagueid"),
-        "league_name": league_name,
+        "leagueid": league_id,  # ← use the safe id
+        "league_name": league_name,  # ← safe name
         "series_id": match.get("series_id"),
         "series_type": series_type,
         "bo": bo,

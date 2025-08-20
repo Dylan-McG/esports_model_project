@@ -1,6 +1,9 @@
+# esports_model_project/src/esports_quant/evaluate/metrics.py
+
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 from sklearn.calibration import calibration_curve
@@ -18,41 +21,52 @@ def expected_calibration_error(
     y_true: np.ndarray,
     y_prob: np.ndarray,
     n_bins: int = 10,
-    strategy: str = "uniform",
+    strategy: Literal["uniform", "quantile"] = "uniform",
 ) -> float:
     """
     ECE = sum_k (n_k / N) * |mean(pred_k) - frac_pos_k|, using sklearn's binning.
     """
-    y_true = np.asarray(y_true)
-    y_prob = np.asarray(y_prob)
+    y_true = np.asarray(y_true, dtype=float)
+    y_prob = np.asarray(y_prob, dtype=float)
 
+    # strategy now typed as Literal[...] to satisfy pylance
     frac_pos, mean_pred = calibration_curve(y_true, y_prob, n_bins=n_bins, strategy=strategy)
 
     if strategy == "uniform":
         edges = np.linspace(0.0, 1.0, n_bins + 1)
         inds = np.clip(np.digitize(y_prob, edges) - 1, 0, n_bins - 1)
-    else:
+    else:  # "quantile"
         edges = np.quantile(y_prob, np.linspace(0, 1, n_bins + 1))
         edges[0], edges[-1] = 0.0, 1.0
         inds = np.clip(np.digitize(y_prob, edges, right=True) - 1, 0, n_bins - 1)
 
     counts = np.bincount(inds, minlength=n_bins).astype(float)
-    weights = counts / max(1, counts.sum())
+    weights = counts / float(max(1, counts.sum()))
 
     ece = 0.0
     cursor = 0
     for b in range(n_bins):
         if counts[b] == 0:
             continue
-        gap = abs(mean_pred[cursor] - frac_pos[cursor])
-        ece += weights[b] * gap
+        gap = float(abs(mean_pred[cursor] - frac_pos[cursor]))
+        ece += float(weights[b]) * gap
         cursor += 1
     return float(ece)
 
 
-def bundle_metrics(y_true: np.ndarray, y_prob: np.ndarray, n_bins: int = 10, strategy: str = "uniform") -> MetricBundle:
+def bundle_metrics(
+    y_true: np.ndarray,
+    y_prob: np.ndarray,
+    n_bins: int = 10,
+    strategy: Literal["uniform", "quantile"] = "uniform",
+) -> MetricBundle:
+    # Clip probs for numerical stability in log_loss
+    y_true = np.asarray(y_true, dtype=float)
+    y_prob = np.asarray(y_prob, dtype=float)
+    y_prob_clip = np.clip(y_prob, 1e-12, 1 - 1e-12)
+
     return MetricBundle(
-        log_loss=log_loss(y_true, np.clip(y_prob, 1e-12, 1 - 1e-12)),
-        brier=brier_score_loss(y_true, y_prob),
-        ece=expected_calibration_error(y_true, y_prob, n_bins=n_bins, strategy=strategy),
+        log_loss=float(log_loss(y_true, y_prob_clip)),
+        brier=float(brier_score_loss(y_true, y_prob)),
+        ece=float(expected_calibration_error(y_true, y_prob, n_bins=n_bins, strategy=strategy)),
     )

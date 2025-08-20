@@ -1,22 +1,62 @@
+# ------------------------
 # Python
+# ------------------------
 __pycache__/
 *.py[cod]
+*.so
+*.egg
 *.egg-info/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
 
-# Envs
-.env
+# ------------------------
+# Virtual envs
+# ------------------------
 .venv/
+.env
+.envrc
 
-# Data & outputs
-data/processed/*
-!data/processed/README.md
-data/raw/*
-!data/raw/README.md
-artifacts/
-data/state/*
-
-# Notebooks & OS cruft
-.ipynb_checkpoints/
+# ------------------------
+# Editors / OS
+# ------------------------
+.vscode/
+.idea/
 .DS_Store
 Thumbs.db
 
+# ------------------------
+# Build / dist / wheels
+# ------------------------
+build/
+dist/
+wheelhouse/
+pip-wheel-metadata/
+
+# ------------------------
+# Data & outputs (tracked readme keepers)
+# ------------------------
+data/raw/*
+!data/raw/README.md
+
+data/processed/*
+!data/processed/README.md
+
+data/state/*
+
+artifacts/
+
+reports/*
+!reports/.gitkeep
+
+# ------------------------
+# Notebooks
+# ------------------------
+.ipynb_checkpoints/
+
+# ------------------------
+# Coverage
+# ------------------------
+.coverage
+coverage.xml
+htmlcov/
